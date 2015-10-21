@@ -14,14 +14,12 @@ bl_reset:
     mov si, var_boot_image_filename
     call fat_getRootFile
 
-    ;jmp bl_error
-
     cmp eax, 0
     je bl_error
 
     call fat_cluster2sector
 
-    mov ebx, eax    ;Load the root dir into 0x8000
+    mov ebx, eax    ;Load the second stage at 0x8000
     xor eax, eax
     mov es, eax
     mov cx, CONST_STAGE_2_START
@@ -30,16 +28,10 @@ bl_reset:
 bl_passToStage2:
     jmp CONST_STAGE_2_START
 
-bl_findBootImg:
-
-bl_loadBootImg:
-
 fat_init:
     call fat_calcFirstDataSector    ;Should be 0x20 + (0x2 * 0x3c2) = 0x7a4
     call fat_calcRootDirSector      ;Should be ((0x2 - 0x2) * 0x1) + 0x7a4 = 0x7a4
     call fat_loadRootDir
-    mov ax, word [CONST_FAT_NUM_RESERVED_SECTORS]
-    mov word [var_fat_firstFatSector], ax
     ret
 
 fat_calcFirstDataSector:
@@ -76,11 +68,6 @@ fat_loadRootDir:
     mov cx, 0x8000
     call bl_loadSector
     ret
-
-;IN: EAX = currentCluster
-;OUT: EAX = nextCluster OR 0 if end
-fat_nextCluster:
-
 
 ;IN: SI = filename
 ;OUT: EAX = fileStartCluster
@@ -215,6 +202,11 @@ var_fat_rootDirSector:
 
 var_fat_firstFatSector:
     dw 0
+
+var_currentCluster:
+    dd 2            ;Current cluster
+    dd 0xffffffff   ;Next cluster
+    dd 0            ;Cluster first sector
 
 ;; Boot data end ------------------------------------
 

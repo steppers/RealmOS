@@ -1,5 +1,6 @@
 echo "Assembling bootloaders..."
-nasm -f bin boot/src/bootStage1.asm -o boot/build/boot1.bin
+nasm -f bin boot/src/bootV2.asm -o boot/build/boot1.bin
+#nasm -f bin boot/src/bootStage1.asm -o boot/build/boot1.bin
 nasm -f bin boot/src/bootStage2.asm -o boot/build/boot2.bin
 
 echo "Creating disk image..."

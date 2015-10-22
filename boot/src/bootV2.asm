@@ -1,6 +1,12 @@
 [BITS 16]
 [ORG 0x7C5A]
 
+;;DEBUG*****************************
+;mov si, var_boot_image_filename
+;call print_str
+;jmp hang
+;;**********************************
+
 boot_reset:
     cli ;disable interrupts
     xor     ax, ax  ;Setup segments
@@ -14,11 +20,7 @@ boot_reset:
     sti ;re-enable interrupts
 
     call fat_init
-
-    ;;TEST***********************
-    mov si, var_boot_image_filename
-    call print_str
-    ;;***************************
+    call fat_getBootFile
 
 hang:
     jmp hang
@@ -39,21 +41,43 @@ fat_init:
     mov ax, word [FAT_NUM_RESERVED_SECTORS]
     mov dword [var_base_fat_sector], eax
     ;Read the first fat sector into 0x0500
-    mov cx, 0x0500
-    xor eax, eax
-    mov ebx, dword [var_base_fat_sector]
-    call readSector
-    ;Read the first data sector into 0x0700
-    mov cx, 0x0700
-    xor eax, eax
-    mov ebx, dword [var_base_data_sector]
-    call readSector
+    call fat_loadRoot
+    ret
+
+fat_getBootFile:
+    ;mov eax, dword [var_cluster_next]
+    ;mov cx, CURRENT_CLUSTER_LOCATION
+    ;call fat_loadCluster
+
+    ;Get the first fileName in the loaded cluster
+    mov eax, CURRENT_CLUSTER_LOCATION
+    add eax, 32 ;Offset to shortfilename
+
+    .loop:
+    mov si, ax
+
     ret
 
 ;IN:    SI = Filename (8 bytes + 3 bytes ext)
-fat_getRootFile:
-
-    ret
+;OUT:   AL = (1:true), (0:false)
+fat_isBootFile:
+    mov ebx, var_boot_image_filename
+    mov cl, 0
+    .loop:
+        lodsb
+        inc cl
+        cmp cl, 11
+            je .success
+        mov dl, byte [ebx]
+        inc ebx
+        cmp al, dl
+            je .loop
+    .fail:
+        mov al, 0
+        ret
+    .success:
+        mov al, 1
+        ret
 
 ;IN: EAX = Cluster => Sector of cluster
 fat_cluster2sector:
@@ -67,41 +91,73 @@ fat_cluster2sector:
 ;Returns the table sector and offset of a cluster
 ;IN:    EAX = Cluster
 ;OUT:   EAX = TableSector
-;       BX = Offset to table entry
+;       EBX = Offset to table entry
 fat_cluster2table:
-    ;offset = cluster % entries_per_fat_sector
     ;FATindex = cluster / entries_per_fat_sector
+    ;offset = cluster % entries_per_fat_sector
+    mov ebx, ENTRIES_PER_FAT_SECTOR
+    xor edx, edx    ;div uses edx so clear it
+    div ebx     ;quotient in eax, remainder in edx
+    mov ebx, edx
     ;return sector = FATindex + num_reserved_sectors
+    xor edx, edx
+    mov dx, word [FAT_NUM_RESERVED_SECTORS]
+    add eax, edx
+    shl ebx, 2
+    ret
 
 ;Returns the value of the given table entry
 ;IN:    EAX = Table sector
-;       BX = Offset
+;       EBX = Offset
 ;OUT:   EAX = Entry
 fat_getTableEntry:
     ;Load the table sector at 0x0500
-    ;mov ebx, eax
-    ;xor eax, eax
-    ;mov cx, 0x0500
-    ;call readSector
+    push ebx
+    mov ebx, eax
+    xor eax, eax
+    mov cx, CURRENT_FAT_LOCATION
+    call readSector
     ;Address = 0x0500 + offset
+    pop ebx
+    add ebx, CURRENT_FAT_LOCATION
     ;EAX = dword [Address]
-    ;return
+    mov eax, dword [ebx]
+    ret
 
-;Loads the cluster at 0x0700
+;Loads the cluster at the destination address
 ;IN:    EAX = Cluster ID
+;       CX = Destination Address
 fat_loadCluster:
-    ;push eax
-    ;call cluster2sector
-    ;mov ebx, eax
-    ;clear eax
-    ;CX = 0x0700
-    ;call readSector
-    ;pop eax
-    ;var_cluster_current = eax
-    ;call fat_cluster2table
-    ;call fat_getTableEntry
-    ;var_cluster_next = eax
-    ;return
+    push eax
+    call fat_cluster2sector
+
+    xor dx, dx
+    mov dl, byte [FAT_SECTORS_PER_CLUSTER]
+    .loop:
+    push dx
+    mov ebx, eax
+    push ebx
+    xor eax, eax
+    call readSector
+    pop eax
+    inc eax
+    pop dx
+    dec dl
+    cmp dl, 0
+        jne .loop
+
+    pop eax
+    mov dword [var_cluster_current], eax
+    call fat_cluster2table
+    call fat_getTableEntry
+    mov dword [var_cluster_next], eax
+    ret
+
+fat_loadRoot:
+    mov eax, 2              ;Root starts in cluster 2
+    mov cx, CURRENT_CLUSTER_LOCATION
+    call fat_loadCluster
+    ret
 
 ;;FAT Subroutines end -----------------------------------------------
 
@@ -114,8 +170,8 @@ readSector:
     ; Push the Data Address Packet
     push eax        ;High sector 64
     push ebx        ;Low sector 64
-    push es         ;Destination index
-    push cx         ;Destination segment
+    push es         ;Destination segment
+    push cx         ;Destination index
     push byte 1     ;1 Sector
     push byte 16    ;16 byte packet
 
@@ -145,7 +201,7 @@ print_str:
 var_err_string:
     db "Error!", 0
 var_boot_image_filename:
-    db "BOOT    IMG"
+    db "BOOT    IMG", 0
 var_base_data_sector:
     dd 0
 var_base_fat_sector:
@@ -155,15 +211,16 @@ var_entries_per_fat_sector:
 
 ;;Current Cluster data
 var_cluster_current:
-    dd 2
+    dd 0xffffffff
 var_cluster_next:
     dd 0xffffffff
-var_cluster_sector:
-    dd 0
-
 ;;Variables end -----------------------------------------------------
 
 ;;Constants start ---------------------------------------------------
+ENTRIES_PER_FAT_SECTOR EQU 128  ;128 4byte entries per sector
+CURRENT_FAT_LOCATION EQU 0x0500
+CURRENT_CLUSTER_LOCATION EQU 0x0700
+
 FAT_BYTES_PER_SECTOR EQU 0x7c00 + 11
 FAT_SECTORS_PER_CLUSTER EQU 0x7c00 + 13
 FAT_NUM_RESERVED_SECTORS EQU 0x7c00 + 14
@@ -183,5 +240,5 @@ FAT_DRIVE_NUM EQU 0x7c00 + 64
 ;;Constants end -----------------------------------------------------
 
 ;;Pad and add the boot signature
-times 420-($-$$) db 0
+;times 420-($-$$) db 0
 dw 0xAA55

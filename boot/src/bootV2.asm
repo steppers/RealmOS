@@ -45,18 +45,54 @@ fat_init:
     ret
 
 fat_getBootFile:
-    ;mov eax, dword [var_cluster_next]
-    ;mov cx, CURRENT_CLUSTER_LOCATION
-    ;call fat_loadCluster
-
     ;Get the first fileName in the loaded cluster
     mov eax, CURRENT_CLUSTER_LOCATION
     add eax, 32 ;Offset to shortfilename
 
     .loop:
+    push eax
+    mov bl, byte [eax]     ;Ensure we haven't reached the end of the directory
+    cmp bl, 0
+        je .fail
     mov si, ax
+    call fat_isBootFile
+    cmp al, 1
+        je .found
 
-    ret
+    .checkNextEntry:
+        pop eax
+        add eax, 64 ;Point to the next entry
+        ;;ASSUMES THAT THE CLUSTER SIZE IS 512! *************************
+        cmp eax, CURRENT_CLUSTER_LOCATION + 512;*************************
+        ;;***************************************************************
+            jl .loop
+
+    .loadNextCluster:
+        push eax
+        mov ebx, dword [var_cluster_next]
+        cmp ebx, 0x0FFFFFFE
+            jge .fail
+        mov eax, ebx
+        mov cx, CURRENT_CLUSTER_LOCATION
+        call fat_loadCluster
+        pop eax
+        jmp fat_getBootFile
+
+    .fail:
+        mov si, var_err_string
+        call print_str
+        jmp hang
+
+    .found:     ;Load it!
+        pop eax
+        ;Get the cluster
+        mov bx, word [eax + 20]
+        shl ebx, 16
+        mov bx, word [eax + 26]
+        mov eax, ebx
+        mov cx, STAGE_2_LOCATION
+        call fat_loadCluster
+        jmp STAGE_2_LOCATION
 
 ;IN:    SI = Filename (8 bytes + 3 bytes ext)
 ;OUT:   AL = (1:true), (0:false)
@@ -190,8 +226,6 @@ print_str:
     or      al, al                              ; test for NUL character
     jz      .DONE
     mov     ah, 0x0E                            ; BIOS teletype
-    mov     bh, 0x00                            ; display page 0
-    mov     bl, 0x07                            ; text attribute
     int     0x10                                ; invoke BIOS
     jmp     print_str
     .DONE:
@@ -199,14 +233,12 @@ print_str:
 
 ;;Variables start ---------------------------------------------------
 var_err_string:
-    db "Error!", 0
+    db "Er", 0
 var_boot_image_filename:
-    db "BOOT    IMG", 0
+    db "BOOT    IMG"
 var_base_data_sector:
     dd 0
 var_base_fat_sector:
-    dd 0
-var_entries_per_fat_sector:
     dd 0
 
 ;;Current Cluster data
@@ -220,6 +252,7 @@ var_cluster_next:
 ENTRIES_PER_FAT_SECTOR EQU 128  ;128 4byte entries per sector
 CURRENT_FAT_LOCATION EQU 0x0500
 CURRENT_CLUSTER_LOCATION EQU 0x0700
+STAGE_2_LOCATION EQU 0x8000
 
 FAT_BYTES_PER_SECTOR EQU 0x7c00 + 11
 FAT_SECTORS_PER_CLUSTER EQU 0x7c00 + 13

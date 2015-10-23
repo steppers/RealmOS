@@ -1,32 +1,12 @@
 [BITS 16]
-[ORG 0x7C5A]
-
 ;;DEBUG*****************************
 ;mov si, var_boot_image_filename
 ;call print_str
 ;jmp hang
 ;;**********************************
 
-boot_reset:
-    cli ;disable interrupts
-    xor     ax, ax  ;Setup segments
-    mov     ds, ax
-    mov     es, ax
-    mov     fs, ax
-    mov     gs, ax
-    ;Init stack
-    mov     ss, ax
-    mov     sp, 0x7c00
-    sti ;re-enable interrupts
-
-    call fat_init
-    call fat_getBootFile
-
-hang:
-    jmp hang
-
 ;;FAT Subroutines start ---------------------------------------------
-fat_init:
+fat_init:   ;0x7C73
     ;calculate var_base_data_sector
     mov eax, dword [FAT_SECTORS_PER_FAT]
     xor ebx, ebx
@@ -36,12 +16,11 @@ fat_init:
     mov bx, word [FAT_NUM_RESERVED_SECTORS]
     add eax, ebx
     mov dword [var_base_data_sector], eax
-    ;calculate var_base_fat_sector
-    xor eax, eax
-    mov ax, word [FAT_NUM_RESERVED_SECTORS]
-    mov dword [var_base_fat_sector], eax
-    ;Read the first fat sector into 0x0500
-    call fat_loadRoot
+
+    ;Load the root directory
+    mov eax, 2              ;Root starts in cluster 2
+    mov cx, CURRENT_CLUSTER_LOCATION
+    call fat_loadCluster
     ret
 
 fat_getBootFile:
@@ -60,11 +39,17 @@ fat_getBootFile:
         je .found
 
     .checkNextEntry:
-        pop eax
-        add eax, 64 ;Point to the next entry
+        pop ebx
+        add ebx, 64 ;Point to the next entry
+        xor eax, eax
+        mov al, byte [FAT_SECTORS_PER_CLUSTER]
+        mov ecx, 512
+        mul ecx
+        add eax, CURRENT_CLUSTER_LOCATION
         ;;ASSUMES THAT THE CLUSTER SIZE IS 512! *************************
-        cmp eax, CURRENT_CLUSTER_LOCATION + 512;*************************
-        ;;***************************************************************
+        cmp ebx, eax;****************************************************
+        ;;**************************No it doesn't!********************
+        mov eax, ebx
             jl .loop
 
     .loadNextCluster:
@@ -92,7 +77,7 @@ fat_getBootFile:
         mov eax, ebx
         mov cx, STAGE_2_LOCATION
         call fat_loadCluster
-        jmp STAGE_2_LOCATION
+        jmp STAGE_2_LOCATION    ;;JUMP!!!!!!!!!!
 
 ;IN:    SI = Filename (8 bytes + 3 bytes ext)
 ;OUT:   AL = (1:true), (0:false)
@@ -132,7 +117,7 @@ fat_cluster2table:
     ;FATindex = cluster / entries_per_fat_sector
     ;offset = cluster % entries_per_fat_sector
     mov ebx, ENTRIES_PER_FAT_SECTOR
-    xor edx, edx    ;div uses edx so clear it
+    ;xor edx, edx    ;div uses edx so clear it
     div ebx     ;quotient in eax, remainder in edx
     mov ebx, edx
     ;return sector = FATindex + num_reserved_sectors
@@ -163,36 +148,29 @@ fat_getTableEntry:
 ;Loads the cluster at the destination address
 ;IN:    EAX = Cluster ID
 ;       CX = Destination Address
-fat_loadCluster:
-    push eax
-    call fat_cluster2sector
+fat_loadCluster:    ;0x7D86
+    push eax    ;Push cluster id
+    call fat_cluster2sector ;Sector in eax
 
-    xor dx, dx
-    mov dl, byte [FAT_SECTORS_PER_CLUSTER]
+    mov dl, byte [FAT_SECTORS_PER_CLUSTER] ;Sectors per cluster in dx
     .loop:
-    push dx
-    mov ebx, eax
-    push ebx
-    xor eax, eax
-    call readSector
-    pop eax
-    inc eax
-    pop dx
-    dec dl
-    cmp dl, 0
+    push dx ;push sectors per cluster (our counter)
+    mov ebx, eax    ;Move sector to ebx
+    push ebx        ;Push the sector
+    xor eax, eax    ;Clear eax
+    call readSector ;Read sector at eax:ebx
+    pop eax         ;Pop the sector
+    inc eax         ;Inc the sector
+    pop dx          ;Pop the sectors per cluster (our counter)
+    dec dl          ;Decrement the sectors per cluster (our counter)
+    cmp dl, 0       ;Break if we have loaded all sectors
         jne .loop
 
-    pop eax
-    mov dword [var_cluster_current], eax
-    call fat_cluster2table
-    call fat_getTableEntry
-    mov dword [var_cluster_next], eax
-    ret
-
-fat_loadRoot:
-    mov eax, 2              ;Root starts in cluster 2
-    mov cx, CURRENT_CLUSTER_LOCATION
-    call fat_loadCluster
+    pop eax ;Pop the newly loaded cluster id
+    mov dword [var_cluster_current], eax    ;Store the cluster id
+    call fat_cluster2table                  ;Convert to cluster fat table entry location
+    call fat_getTableEntry                  ;Get the next cluster in the chain
+    mov dword [var_cluster_next], eax       ;Store the next cluster in the chain
     ret
 
 ;;FAT Subroutines end -----------------------------------------------
@@ -236,16 +214,18 @@ var_err_string:
     db "Er", 0
 var_boot_image_filename:
     db "BOOT    IMG"
-var_base_data_sector:
+var_base_data_sector:;0x7DEB
     dd 0
-var_base_fat_sector:
+var_base_fat_sector:;0x7DEF
     dd 0
 
 ;;Current Cluster data
-var_cluster_current:
+var_cluster_current:;0x7DF3
     dd 0xffffffff
-var_cluster_next:
+var_cluster_next:   ;0x7DF7
     dd 0xffffffff
+var_cluster_size:
+    db 1
 ;;Variables end -----------------------------------------------------
 
 ;;Constants start ---------------------------------------------------
@@ -271,7 +251,3 @@ FAT_FLAGS EQU 0x7c00 + 40
 FAT_ROOT_CLUSTER EQU 0x7c00 + 44
 FAT_DRIVE_NUM EQU 0x7c00 + 64
 ;;Constants end -----------------------------------------------------
-
-;;Pad and add the boot signature
-;times 420-($-$$) db 0
-dw 0xAA55
